@@ -22,6 +22,7 @@ const (
 	TypeSSH                = "ssh"
 	TypeShadowTLS          = "shadowtls"
 	TypeAnyTLS             = "anytls"
+	TypeMieru              = "mieru"
 	TypeShadowsocksR       = "shadowsocksr"
 	TypeVLESS              = "vless"
 	TypeTUIC               = "tuic"
@@ -110,6 +111,8 @@ func ProxyDisplayName(proxyType string) string {
 		return "OpenVPN Server"
 	case TypeTailscale:
 		return "Tailscale"
+	case TypeMieru:
+		return "Mieru"
 	case TypeCloudflared:
 		return "Cloudflared"
 	case TypeSelector:
