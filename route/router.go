@@ -47,6 +47,8 @@ type Router struct {
 	pauseManager      pause.Manager
 	trackers          []adapter.ConnectionTracker
 	platformInterface adapter.PlatformInterface
+	scope             *adapter.Scope
+	started           bool
 }
 
 func NewRouter(ctx context.Context, logFactory log.Factory, options option.RouteOptions, dnsOptions option.DNSOptions) *Router {
@@ -217,6 +219,8 @@ func (r *Router) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		if r.ruleSetUpdater != nil {
 			r.ruleSetUpdater.Start()
 		}
+		r.scope = scope
+		r.started = true
 		return nil
 	case adapter.StartStateStarted:
 		for _, ruleSet := range r.ruleSets {
@@ -242,6 +246,122 @@ func (r *Router) AppendTracker(tracker adapter.ConnectionTracker) {
 
 func (r *Router) NeedFindProcess() bool {
 	return r.needFindProcess
+}
+
+// UpdateRules hot-swaps route rules and rule-sets on a running router.
+// It mirrors the Initialize/Start(Start)/Start(PostStart) sequence: new
+// rule-sets and rules are fully started before being swapped in, and the
+// previous ones are closed afterwards. On failure the old rules stay active.
+func (r *Router) UpdateRules(rules []option.Rule, ruleSets []option.RuleSet) error {
+	if !r.started {
+		return E.New("router not started")
+	}
+	newRules := make([]adapter.Rule, 0, len(rules))
+	newRuleSets := make([]adapter.RuleSet, 0, len(ruleSets))
+	newRuleSetMap := make(map[string]adapter.RuleSet)
+	cleanup := func() {
+		for _, rule := range newRules {
+			rule.Close()
+		}
+		for _, ruleSet := range newRuleSets {
+			ruleSet.Close()
+		}
+	}
+	for i, options := range rules {
+		err := R.ValidateNoNestedRuleActions(options)
+		if err != nil {
+			cleanup()
+			return E.Cause(err, "parse rule[", i, "]")
+		}
+		rule, err := R.NewRule(r.ctx, r.logger, options, false)
+		if err != nil {
+			cleanup()
+			return E.Cause(err, "parse rule[", i, "]")
+		}
+		newRules = append(newRules, rule)
+	}
+	for i, options := range ruleSets {
+		for _, tag := range options.Tag {
+			if _, exists := newRuleSetMap[tag]; exists {
+				cleanup()
+				return E.New("duplicate rule-set tag: ", tag)
+			}
+			ruleSet, err := R.NewRuleSet(r.ctx, r.logger, tag, options)
+			if err != nil {
+				cleanup()
+				return E.Cause(err, "parse rule-set[", i, "]")
+			}
+			newRuleSets = append(newRuleSets, ruleSet)
+			newRuleSetMap[tag] = ruleSet
+		}
+	}
+	if len(newRuleSets) > 0 {
+		startContext := adapter.NewHTTPStartContext()
+		var ruleSetStartGroup task.Group
+		for i, ruleSet := range newRuleSets {
+			ruleSetInPlace := ruleSet
+			ruleSetStartGroup.Append0(func(ctx context.Context) error {
+				err := ruleSetInPlace.StartContext(ctx, startContext)
+				if err != nil {
+					return E.Cause(err, "initialize rule-set[", i, "]")
+				}
+				return nil
+			})
+		}
+		ruleSetStartGroup.Concurrency(5)
+		ruleSetStartGroup.FastFail()
+		err := ruleSetStartGroup.Run(r.ctx)
+		startContext.Close()
+		if err != nil {
+			cleanup()
+			return err
+		}
+	}
+	for i, rule := range newRules {
+		err := rule.Start()
+		if err != nil {
+			cleanup()
+			return E.Cause(err, "initialize rule[", i, "]")
+		}
+	}
+
+	oldRules := r.rules
+	oldRuleSets := r.ruleSets
+	oldRuleSetUpdater := r.ruleSetUpdater
+
+	r.rules = newRules
+	r.ruleSets = newRuleSets
+	r.ruleSetMap = newRuleSetMap
+	r.network.Initialize(r.ruleSets)
+
+	r.ruleSetUpdater = R.NewRuleSetUpdater(r.ctx, newRuleSets)
+	if r.ruleSetUpdater != nil {
+		r.ruleSetUpdater.Start()
+	}
+	if oldRuleSetUpdater != nil {
+		oldRuleSetUpdater.Close()
+	}
+	if r.scope != nil {
+		for _, rule := range newRules {
+			r.scope.Add(rule.Close)
+		}
+		for _, ruleSet := range newRuleSets {
+			r.scope.Add(ruleSet.Close)
+		}
+		if r.ruleSetUpdater != nil {
+			r.scope.Add(r.ruleSetUpdater.Close)
+		}
+	}
+	for _, rule := range oldRules {
+		rule.Close()
+	}
+	for _, ruleSet := range oldRuleSets {
+		ruleSet.Close()
+	}
+	for _, ruleSet := range newRuleSets {
+		ruleSet.Cleanup()
+	}
+	return nil
 }
 
 func (r *Router) NeedFindNeighbor() bool {
