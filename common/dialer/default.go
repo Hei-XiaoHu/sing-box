@@ -51,6 +51,8 @@ type DefaultDialer struct {
 	fallbackNetworkType    []C.InterfaceType
 	networkFallbackDelay   time.Duration
 	networkLastFallback    common.TypedValue[time.Time]
+
+	guard *destinationGuard // xboard: block_destinations
 }
 
 func NewDefault(ctx context.Context, options option.DialerOptions) (*DefaultDialer, error) {
@@ -248,6 +250,7 @@ func NewDefault(ctx context.Context, options option.DialerOptions) (*DefaultDial
 		networkType:            networkType,
 		fallbackNetworkType:    fallbackNetworkType,
 		networkFallbackDelay:   networkFallbackDelay,
+		guard:                  newDestinationGuard(options.BlockDestinations),
 	}, nil
 }
 
@@ -273,6 +276,9 @@ func (d *DefaultDialer) DialContext(ctx context.Context, network string, address
 	} else if address.IsDomain() {
 		return nil, E.New("domain not resolved")
 	}
+	if err := d.guard.check(address); err != nil {
+		return nil, err
+	}
 	if d.networkStrategy == nil {
 		conn, err := listener.ListenNetworkNamespace[net.Conn](ctx, d.netns, func() (net.Conn, error) {
 			switch N.NetworkName(network) {
@@ -296,6 +302,9 @@ func (d *DefaultDialer) DialContext(ctx context.Context, network string, address
 }
 
 func (d *DefaultDialer) DialParallelInterface(ctx context.Context, network string, address M.Socksaddr, strategy *C.NetworkStrategy, interfaceType []C.InterfaceType, fallbackInterfaceType []C.InterfaceType, fallbackDelay time.Duration) (net.Conn, error) {
+	if err := d.guard.check(address); err != nil {
+		return nil, err
+	}
 	if strategy == nil {
 		strategy = d.networkStrategy
 	}
@@ -468,6 +477,7 @@ func (d *DefaultDialer) trackPacketConn(ctx context.Context, destination M.Socks
 	if err != nil {
 		return conn, err
 	}
+	conn = d.guard.wrapPacketConn(conn)
 	if d.connectionManager != nil {
 		conn = d.connectionManager.TrackPacketConn(conn)
 	}

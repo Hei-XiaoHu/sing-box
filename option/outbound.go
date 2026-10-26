@@ -2,6 +2,7 @@ package option
 
 import (
 	"context"
+	"net/netip"
 	"reflect"
 
 	C "github.com/sagernet/sing-box/constant"
@@ -109,6 +110,10 @@ type AbstractDialerOptions struct {
 
 	// Deprecated: migrated to domain resolver
 	DomainStrategy DomainStrategy `json:"domain_strategy,omitempty" schema:"omit"`
+
+	// xboard: refuse to reach these destination prefixes. Checked against the
+	// final IP of every TCP/UDP dial and every UDP packet, after DNS resolution.
+	BlockDestinations badoption.Listable[netip.Prefix] `json:"block_destinations,omitempty"`
 }
 
 type _DomainResolveOptions struct {
