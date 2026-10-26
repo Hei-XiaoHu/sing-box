@@ -1,19 +1,22 @@
 package hysteria2
 
 import (
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common"
 )
 
+func (h *Inbound) updateUsers(users []option.Hysteria2User) {
+	h.service.UpdateUsers(adapter.NewInboundUsers(users, func(it option.Hysteria2User) string {
+		return it.Name
+	}), common.Map(users, func(it option.Hysteria2User) string {
+		return it.Password
+	}))
+}
+
 func (h *Inbound) UpdateUsers(users []option.Hysteria2User) error {
-	userList := make([]int, 0, len(users))
-	userNameList := make([]string, 0, len(users))
-	userPasswordList := make([]string, 0, len(users))
-	for index, user := range users {
-		userList = append(userList, index)
-		userNameList = append(userNameList, user.Name)
-		userPasswordList = append(userPasswordList, user.Password)
-	}
-	h.service.UpdateUsers(userList, userPasswordList)
-	h.userNameList = userNameList
+	h.userAccess.Lock()
+	defer h.userAccess.Unlock()
+	h.updateUsers(users)
 	return nil
 }

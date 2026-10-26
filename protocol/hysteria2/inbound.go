@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -37,12 +38,12 @@ func RegisterInbound(registry *inbound.Registry) {
 
 type Inbound struct {
 	inbound.Adapter
-	router       adapter.Router
-	logger       log.ContextLogger
-	listener     *listener.Listener
-	tlsConfig    tls.ServerConfig
-	service      *hysteria2.Service[int]
-	userNameList []string
+	router     adapter.Router
+	logger     log.ContextLogger
+	listener   *listener.Listener
+	tlsConfig  tls.ServerConfig
+	service    *hysteria2.Service[*adapter.InboundUser]
+	userAccess sync.Mutex // xboard: runtime user updates
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.Hysteria2InboundOptions) (adapter.Inbound, error) {
@@ -180,7 +181,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 			}
 		}
 	}
-	hysteriaService, err := hysteria2.NewService[int](hysteria2.ServiceOptions{
+	hysteriaService, err := hysteria2.NewService[*adapter.InboundUser](hysteria2.ServiceOptions{
 		Context:            ctx,
 		Logger:             logger,
 		BrutalDebug:        options.BrutalDebug,
@@ -210,17 +211,8 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if err != nil {
 		return nil, err
 	}
-	userList := make([]int, 0, len(options.Users))
-	userNameList := make([]string, 0, len(options.Users))
-	userPasswordList := make([]string, 0, len(options.Users))
-	for index, user := range options.Users {
-		userList = append(userList, index)
-		userNameList = append(userNameList, user.Name)
-		userPasswordList = append(userPasswordList, user.Password)
-	}
-	hysteriaService.UpdateUsers(userList, userPasswordList)
 	inbound.service = hysteriaService
-	inbound.userNameList = userNameList
+	inbound.updateUsers(options.Users)
 	return inbound, nil
 }
 
@@ -236,8 +228,8 @@ func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, source M.S
 	metadata.Source = source
 	metadata.Destination = destination
 	h.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
-	userID, _ := auth.UserFromContext[int](ctx)
-	if userName := h.userNameList[userID]; userName != "" {
+	inboundUser, _ := auth.UserFromContext[*adapter.InboundUser](ctx)
+	if userName := inboundUser.UserName(); userName != "" {
 		metadata.User = userName
 		h.logger.InfoContext(ctx, "[", userName, "] inbound connection to ", metadata.Destination)
 	} else {
@@ -258,8 +250,8 @@ func (h *Inbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn, 
 	metadata.Source = source
 	metadata.Destination = destination
 	h.logger.InfoContext(ctx, "inbound packet connection from ", metadata.Source)
-	userID, _ := auth.UserFromContext[int](ctx)
-	if userName := h.userNameList[userID]; userName != "" {
+	inboundUser, _ := auth.UserFromContext[*adapter.InboundUser](ctx)
+	if userName := inboundUser.UserName(); userName != "" {
 		metadata.User = userName
 		h.logger.InfoContext(ctx, "[", userName, "] inbound packet connection to ", metadata.Destination)
 	} else {
