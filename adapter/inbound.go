@@ -27,6 +27,16 @@ type UpdatableInbound[T any] interface {
 	UpdateUsers(users []T) error
 }
 
+// DynamicInboundManager lets callers add, remove and stop inbounds on a
+// running instance. Inbounds created after start are started immediately.
+type DynamicInboundManager interface {
+	InboundManager
+	// Remove stops the inbound and releases its resources (e.g. listeners).
+	Remove(tag string) error
+	// Close stops all inbounds (closing listeners) without closing the box.
+	Close() error
+}
+
 type UpdatableShadowsocksInbound interface {
 	Inbound
 	UpdateUsersByOptions(users []option.ShadowsocksUser) error

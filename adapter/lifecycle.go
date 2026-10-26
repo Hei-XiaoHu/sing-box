@@ -88,6 +88,22 @@ func (s *Scope) Add(cleanup func() error) {
 	s.access.Unlock()
 }
 
+// Remove closes and forgets the child scope of a component started via Start,
+// releasing only that component's resources. The parent keeps its cleanup
+// hook, which becomes a no-op because the child is already closed.
+func (s *Scope) Remove(component Lifecycle) error {
+	s.access.Lock()
+	child, loaded := s.children[component]
+	if loaded {
+		delete(s.children, component)
+	}
+	s.access.Unlock()
+	if !loaded {
+		return nil
+	}
+	return child.Close()
+}
+
 func (s *Scope) Start(name string, component Lifecycle, stage StartStage) error {
 	s.access.Lock()
 	err := s.ctx.Err()
